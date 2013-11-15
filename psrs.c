@@ -9,12 +9,6 @@
 #define NUM_PROC 4
 #define ROOT 0
 
-/*MPI tags*/
-#define TAG_SEG 1
-
-/*TODO: somewhere in code, set error handler*/
-/*TODO: account for non-even distributions of keys to sort*/
-
 int
 longcmp(const void * a, const void * b)
 {
@@ -40,6 +34,9 @@ main(int argc, char * argv[])
     int part_start[NUM_PROC];
     int rpart_size[NUM_PROC];
     int rpart_start[NUM_PROC];
+    int disps[NUM_PROC];
+    int rsize_sum[NUM_PROC];
+    int size_sum;
     long list[LIST_LEN];
     long sbuf[LIST_LEN];
     long rbuf[LIST_LEN];
@@ -58,7 +55,7 @@ main(int argc, char * argv[])
         /*generate list to sort*/
         srandom(time(NULL));
         for (i = 0; i < LIST_LEN; i ++) {
-            list[i] = random() % 10;
+            list[i] = random()%10;
         }
     }  
     /*distribute segments*/
@@ -86,12 +83,8 @@ main(int argc, char * argv[])
         qsort(samples, NUM_PROC*NUM_PROC, sizeof(long), longcmp);
     
         /*choose NUM_PROC - 1 pivots*/
-        for (i = 0; i < NUM_PROC*NUM_PROC; i ++) {
-                
-        }
         for(i = 1; i < NUM_PROC; i ++) {
-            sbuf[i - 1] = samples[(i)*NUM_PROC];
-            printf("pivot[%d] = %ld\n", i, sbuf[i-1]);
+            sbuf[i - 1] = samples[i*NUM_PROC];
         }
     }
     /*distribute pivots*/
@@ -112,12 +105,14 @@ main(int argc, char * argv[])
 
     memcpy(sbuf, seg, LIST_LEN/NUM_PROC*sizeof(long));
     
-/*NOTE: I THINK WORKING UNTIL HERE*/
     /*Share location data used by MPI_Alltoallv*/
-    MPI_Alltoall(part_start, 1, MPI_INT, rpart_start, 1,
-                MPI_INT, MPI_COMM_WORLD);
     MPI_Alltoall(part_size, 1, MPI_INT, rpart_size, 1,
                 MPI_INT, MPI_COMM_WORLD);
+    
+    rpart_start[0] = 0;
+    for (i = 1; i < NUM_PROC; i ++) {
+        rpart_start[i] = rpart_start[i - 1] + rpart_size[i - 1];
+    }
 
     /*Share all partitions*/
     MPI_Alltoallv(sbuf, part_size, part_start, MPI_LONG,
@@ -125,9 +120,28 @@ main(int argc, char * argv[])
 
     /*Phase 4*/
     /*Give merges to ROOT for final concatenation and result*/
-    MPI_Gather(rbuf, LIST_LEN/NUM_PROC, MPI_LONG, list, LIST_LEN/NUM_PROC, 
-              MPI_LONG, ROOT, MPI_COMM_WORLD);
+    size_sum = 0;
+    for (i = 0; i < NUM_PROC; i ++) {
+        size_sum += rpart_size[i];
+    }
+    
+    qsort(rbuf, size_sum, sizeof(long), longcmp);
+    memcpy(sbuf, rbuf, size_sum*sizeof(long));
+    
+    /*Give root amount to gather from each node*/
+    MPI_Gather(&size_sum, 1, MPI_INT, rsize_sum, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    if (rank == ROOT) {
+        disps[0] = 0;
+        for (i = 1; i < NUM_PROC; i ++) {
+            disps[i] = disps[i - 1] + rsize_sum[i - 1];
+        }
+    }
 
+    /*Assemble list onto ROOT*/
+    MPI_Gatherv(sbuf, size_sum, MPI_LONG, list, rsize_sum, disps,
+               MPI_LONG, ROOT, MPI_COMM_WORLD);
+
+    /*Print list*/
     if (rank == ROOT) {
         printf("FINAL LIST:\n");
         for(i = 0; i < LIST_LEN; i ++) {
