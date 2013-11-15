@@ -21,9 +21,9 @@ longcmp(const void * a, const void * b)
     const long * first = (const long *)a;
     const long * sec = (const long *)b;
 
-     if (first < sec) {
+    if (*first < *sec) {
         return -1;
-    } else if (first > sec) {
+    } else if (*first > *sec) {
         return 1;
     }
 
@@ -51,23 +51,32 @@ main(int argc, char * argv[])
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     
     /*Phase 1*/
-    printf("Phase 1. Rank %d\n", rank);
     /*if process zero, generate and distribute segments*/
     if (rank == ROOT) {
         /*generate list to sort*/
         srandom(time(NULL));
         for (i = 0; i < LIST_LEN; i ++) {
-            list[i] = random();
+            list[i] = random() % 10;
         }
     }  
+    #ifdef DEBUG
+    if (rank == ROOT) {
+        printf("TO SCATTER:\n");
+        for(i = 0; i < LIST_LEN; i ++) {
+            printf("%d: %ld\n", i, list[i]);    
+        }
+    }
+    #endif
     /*distribute segments*/
     MPI_Scatter(list, LIST_LEN/NUM_PROC, MPI_LONG,
                rbuf, LIST_LEN/NUM_PROC, MPI_LONG, ROOT, 
                MPI_COMM_WORLD);
     
     /*Sort own segment*/
-    memcpy(seg, rbuf, LIST_LEN/NUM_PROC);
+    memcpy(seg, rbuf, LIST_LEN/NUM_PROC*sizeof(long));
     qsort(seg, LIST_LEN/NUM_PROC, sizeof(long), longcmp);
+   
+    /*NOTE: CONFIRMED WORKING UNTIL HERE*/
     
     /*choose and give ROOT samples*/
     for (i = 0; i < NUM_PROC; i ++) {
@@ -78,24 +87,26 @@ main(int argc, char * argv[])
               MPI_LONG, ROOT, MPI_COMM_WORLD);
     
     /*Phase 2*/
-    printf("Phase 2. Rank %d\n", rank);
     if (rank == ROOT) {
         long samples[NUM_PROC*NUM_PROC];
         
         /*sort list of samples*/
-        memcpy(samples, rbuf, NUM_PROC*NUM_PROC);
+        memcpy(samples, rbuf, NUM_PROC*NUM_PROC*sizeof(long));
         qsort(samples, NUM_PROC*NUM_PROC, sizeof(long), longcmp);
 
         /*choose NUM_PROC - 1 pivots*/
         for(i = 0; i < NUM_PROC - 1; i ++) {
             sbuf[i] = rbuf[(i + 1)*NUM_PROC];
+            printf("pivots: %ld\n", sbuf[i]);    
+        }
+        for(i = 0; i < LIST_LEN; i ++) {
+            printf("rbuf[%d] = %ld\n", i, rbuf[i]);    
         }
     }
     /*distribute pivots*/
     MPI_Bcast(sbuf, NUM_PROC - 1, MPI_LONG, ROOT, MPI_COMM_WORLD);
 
     /*Phase 3*/
-    printf("Phase 3. Rank %d\n", rank);
     /*Parition seg according to pivots*/
     j = 0;
     part_start[0] = 0;
@@ -106,15 +117,21 @@ main(int argc, char * argv[])
          part_start[i + 1] = j;
          part_size[i] = j - part_start[i];
     }
-    part_size[NUM_PROC] = LIST_LEN/NUM_PROC - part_start[i + 1];
-    memcpy(sbuf, seg, LIST_LEN/NUM_PROC);
+    part_size[LIST_LEN/NUM_PROC] = LIST_LEN/NUM_PROC - part_start[i + 1];
+    memcpy(sbuf, seg, LIST_LEN/NUM_PROC*sizeof(long));
 
     #ifdef DEBUG
     MPI_Barrier(MPI_COMM_WORLD);
-    int cur_rank = 0;
+    cur_rank = 0;
     while (cur_rank < NUM_PROC) {
         if (cur_rank == rank) {
             printf("Rank:%d\n", rank);
+            for (i = 0; i < LIST_LEN/NUM_PROC; i ++) {
+                printf("seg[%d] = %ld\n", i, seg[i]);
+            }
+            for (i = 0; i < NUM_PROC - 1; i ++) {
+                printf("pivots[%d] = %ld\n", i, sbuf[i]);
+            }
             for (i = 0; i < NUM_PROC; i ++) {
                 printf("part_start[%d] = %d\n", i, part_start[i]);
             }
@@ -139,18 +156,19 @@ main(int argc, char * argv[])
                  rbuf, rpart_size, rpart_start, MPI_LONG, MPI_COMM_WORLD);
 
     /*Phase 4*/
-    printf("Phase 4. Rank %d\n", rank);
     /*Give merges to ROOT for final concatenation and result*/
     MPI_Gather(rbuf, LIST_LEN/NUM_PROC, MPI_LONG, list, LIST_LEN/NUM_PROC, 
               MPI_LONG, ROOT, MPI_COMM_WORLD);
 
+    #ifdef DEBUG
     if (rank == ROOT) {
+        printf("FINAL LIST:\n");
         for(i = 0; i < LIST_LEN; i ++) {
-            printf("%ld\n", list[i]);    
+            printf("%d: %ld\n", i, list[i]);    
         }
     }
+    #endif
 
-    printf("Finalize. Rank %d\n", rank);
     MPI_Finalize();
     
     return 0;
